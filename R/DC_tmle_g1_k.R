@@ -68,59 +68,107 @@ DC_tmle_g1_k <- function(data,
                          conf.level=0.95,
                          stat = "median"){
 
-  runs <- list()
-  # placeholder_output <- generate_placeholder_output(learners, n_split)
-  #Run on num_cf splits
-  set.seed(seed)
-  cf_seed = sample(num_cf)
-  n = nrow(data)
-  if(is.null(gbounds)) gbounds = 5/sqrt(n)/log(n)
-  #################### step 2 and 3 ########################
+  tryCatch({
+    print("Function started!")
 
-  for(cf in 1:num_cf){
-    seed1 = cf_seed[cf]
-    fit_result = try({
-      tmle_single_g1_p(data,
-                  exposure,
-                  outcome,
-                  covarsT,
-                  covarsO,
-                  family.y,
-                  learners,
-                  control,
-                  n_split,
-                  rand_split,
-                  gbounds,
-                  Qbounds,
-                  seed=seed1)}, silent = TRUE)
-
-    if (inherits(fit_result, "try-error")) {
-      fit_sngle <-  data.frame(rd=NA, var = NA)
-    } else {
-      fit_sngle <- fit_result
+    runs <- list()
+    print("Setting seed and initializing variables")
+    set.seed(seed)
+    cf_seed = sample(num_cf)
+    n = nrow(data)
+    if(is.null(gbounds)) {
+      print(paste("n =", n))
+      print(paste("class of n:", class(n)))
+      gbounds = 5/sqrt(n)/log(n)
+      print(paste("gbounds =", gbounds))
     }
 
-    runs[[cf]] <- fit_sngle
-  }
+    print("Starting main loop")
+    debug_info <- list()
+    for(cf in 1:num_cf){
+      print(paste("Processing split", cf, "of", num_cf))
+      seed1 = cf_seed[cf]
+      fit_result = tryCatch({
+        print(nrow(data))
+        tmle_single_g1_p(data,
+                         exposure,
+                         outcome,
+                         covarsT,
+                         covarsO,
+                         family.y,
+                         learners,
+                         control,
+                         n_split,
+                         rand_split,
+                         gbounds,
+                         Qbounds,
+                         seed=seed1)
+      }, error = function(e) {
+        print(paste("Error in tmle_single_g1_p:", e$message))
+        print("Stack trace:")
+        print(sys.calls())
+        return(NULL)
+      })
 
-  res = dplyr::bind_rows(runs)
+      if (is.null(fit_result)) {
+        fit_sngle <-  data.frame(rd=NA, var = NA)
+      } else {
+        fit_sngle <- fit_result
+      }
+      runs[[cf]] <- fit_sngle
+      debug_info[[cf]] <- list(seed = seed1, fit_result = fit_result)
 
-  if(stat == "mean"){
-    medians <- apply(res, 2, mean, na.rm = TRUE)
-    res <- res %>% mutate(var0 = var + (rd - medians[1])^2)
-    results <- apply(res, 2, mean, na.rm = TRUE)
-  }
-  if(stat == "median"){
-    medians <- apply(res, 2, median, na.rm = TRUE)
-    res <- res %>% mutate(var0 = var + (rd - medians[1])^2)
-    results <- apply(res, 2, median, na.rm = TRUE)
-  }
-  t.value = qt((1-conf.level)/2, nrow(data), lower.tail = F)
+      print(paste("Completed split", cf, "Result:", paste(names(fit_sngle), fit_sngle, sep="=", collapse=", ")))
+    }
 
-  l_ci = results[1] - t.value*sqrt(results[3])
-  u_ci = results[1] + t.value*sqrt(results[3])
+    print("Binding rows")
+    res = dplyr::bind_rows(runs)
 
-  res1 = tibble(ATE=results[1], se = sqrt(results[3]), lower.ci = l_ci, upper.ci = u_ci)
+    print("Calculating statistics")
+    if(stat == "mean"){
+      medians <- apply(res, 2, mean, na.rm = TRUE)
+      res <- res %>% mutate(var0 = var + (rd - medians[1])^2)
+      results <- apply(res, 2, mean, na.rm = TRUE)
+    }
+    if(stat == "median"){
+      medians <- apply(res, 2, median, na.rm = TRUE)
+      res <- res %>% mutate(var0 = var + (rd - medians[1])^2)
+      results <- apply(res, 2, median, na.rm = TRUE)
+    }
 
-  return(res1)
+    print("Calculating t-value")
+    print(paste("conf.level:", conf.level))
+    print(paste("nrow(data):", nrow(data)))
+    print(paste("Class of nrow(data):", class(nrow(data))))
+
+    if (!is.numeric(conf.level) || !is.numeric(nrow(data))) {
+      stop("conf.level or nrow(data) is not numeric")
+    }
+
+    t.value = qt((1-conf.level)/2, nrow(data), lower.tail = F)
+    print(paste("t.value:", t.value))
+
+    print("Calculating confidence intervals")
+    print(paste("results[1]:", results[1]))
+    print(paste("results[3]:", results[3]))
+
+    if (!is.numeric(results[1]) || !is.numeric(results[3])) {
+      stop("results[1] or results[3] is not numeric")
+    }
+
+    l_ci = results[1] - t.value*sqrt(results[3])
+    u_ci = results[1] + t.value*sqrt(results[3])
+
+    res1 = tibble(ATE=results[1], se = sqrt(results[3]), lower.ci = l_ci, upper.ci = u_ci)
+
+    print("Returning results")
+    return(list(result = res1, debug_info = debug_info))
+  }, error = function(e) {
+    message <- paste("Error in DC_tmle_g1_k:", e$message)
+    print(message)
+    print(paste("Error occurred at:", e$call))
+    # print("Stack trace:")
+    # print(sys.calls())
+    stop(message)
+  })
 }

@@ -47,18 +47,28 @@ tmle_single_g1_p = function(data,
 
   #### step: 1.1 ############
 
-  set.seed(seed)
-  splits_p <- sample(rep(1:n_split, diff(floor(nrow(data) * c(0:n_split/n_split)))))
+  tryCatch({
+    print("tmle_single_g1_p function started")
+    print(paste("Number of rows in data:", nrow(data)))
+    print(paste("n_split:", n_split))
 
-  if(family.y == "gaussian"){
-    original.Y = outcome
-    min.Y = min(data[, outcome])
-    max.Y = max(data[, outcome])
-    data$Y.star = (data[, outcome] - min.Y)/(max.Y-min.Y)
-    outcome = "Y.star"
-  }
+    set.seed(seed)
+    splits_p <- sample(rep(1:n_split, diff(floor(nrow(data) * c(0:n_split/n_split)))))
+    print("splits_p created")
+    print(paste("Length of splits_p:", length(splits_p)))
+    print(paste("Unique values in splits_p:", paste(unique(splits_p), collapse = ", ")))
 
-  data_pp = data_p = data %>% mutate(s=splits_p)  %>% arrange(s)
+    if(family.y == "gaussian"){
+      original.Y = outcome
+      min.Y = min(data[, outcome])
+      max.Y = max(data[, outcome])
+      data$Y.star = (data[, outcome] - min.Y)/(max.Y-min.Y)
+      outcome = "Y.star"
+    }
+
+    data_pp = data_p = data %>% mutate(s=splits_p) %>% arrange(s)
+    print("data_p created")
+    print(paste("Number of rows in data_p:", nrow(data_p)))
 
   # Create nested dataset
 
@@ -66,19 +76,50 @@ tmle_single_g1_p = function(data,
     group_by(s) %>%
     tidyr::nest()
 
+  print("Nested data created")
+  print(paste("Number of nested datasets:", nrow(dat_nested_p)))
+
   #### step: 1.2.1 ############
 
   # P-score model
 
   pi_fitter <- function(df){
-    SuperLearner::SuperLearner(Y=as.matrix(df[, exposure]),
-                               X=df[, covarsT],
-                               family=binomial(),
-                               SL.library=learners,
-                               cvControl=control)
+    tryCatch({
+      SuperLearner::SuperLearner(Y = as.matrix(df[, exposure]),
+                                 X = df[, covarsT],
+                                 family = binomial(),
+                                 SL.library = learners,
+                                 cvControl = control)
+    }, error = function(e) {
+      print(paste("Error in SuperLearner call:", e$message))
+      print("Learners used:")
+      print(learners)
+      print("First few rows of X:")
+      print(head(df[, covarsT]))
+      print("First few values of Y:")
+      print(head(as.matrix(df[, exposure])))
+      stop(e)
+    })
   }
 
-  dat_nested_p <- dat_nested_p %>% mutate(pi_fit = map(data, pi_fitter))
+  print("Attempting to fit pi models")
+  dat_nested_p <- dat_nested_p %>%
+    mutate(pi_fit = map(data, ~tryCatch(pi_fitter(.x), error = function(e) {
+      print(paste("Error in pi_fitter for split:", .x$s[1]))
+      print(e$message)
+      return(NULL)
+    })))
+
+  # Check if any pi_fit failed
+  failed_fits <- dat_nested_p %>%
+    mutate(failed = map_lgl(pi_fit, is.null)) %>%
+    filter(failed)
+
+  if (nrow(failed_fits) > 0) {
+    print("Some pi_fit models failed:")
+    print(failed_fits$s)
+    stop("pi_fit failed for some splits")
+  }
 
 
   ########## 1.3.1 ##########################
@@ -320,6 +361,12 @@ tmle_single_g1_p = function(data,
 
   return(res)
 
+  }, error = function(e) {
+    print(paste("Error in tmle_single_g1_p:", e$message))
+    # print("Error occurred at:")
+    # print(sys.calls())
+    stop(e)
+  })
 }
 
 
